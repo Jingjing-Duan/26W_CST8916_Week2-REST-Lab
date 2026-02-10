@@ -2,6 +2,9 @@
 
 This project demonstrates a simple REST API built with Python's Flask framework. The API performs CRUD (Create, Read, Update, Delete) operations on user data, which can be tested locally and deployed to Azure App Service for cloud hosting.
 
+## Demo Video
+https://youtu.be/pFg2FNKXb_4
+
 ---
 
 ## Part 1: HTTP Fundamentals

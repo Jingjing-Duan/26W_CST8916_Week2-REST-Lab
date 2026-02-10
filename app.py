@@ -5,6 +5,7 @@
 # abort: to handle errors and send error status codes
 from flask import Flask, jsonify, request, abort
 from flask_cors import CORS  # Enable Cross-Origin Resource Sharing for client apps
+from werkzeug.exceptions import BadRequest
 
 # Initialize the Flask app
 app = Flask(__name__)
@@ -20,6 +21,55 @@ users = [
     {"id": 1, "name": "Alice", "age": 25},
     {"id": 2, "name": "Bob", "age": 30},
 ]
+
+tasks = [
+    {"id": 1, "title": "Learn REST", "description": "Study REST principles", "user_id": 1, "completed": True},
+    {"id": 2, "title": "Build API", "description": "Complete the assignment", "user_id": 2, "completed": False},
+]
+
+# ✅ NEW: Helper functions
+def find_user(user_id: int):
+    return next((u for u in users if u["id"] == user_id), None)
+
+def find_task(task_id: int):
+    return next((t for t in tasks if t["id"] == task_id), None)
+
+def next_task_id():
+    return (max([t["id"] for t in tasks]) + 1) if tasks else 1
+
+def get_json_or_abort_400():
+    """
+    Invalid JSON in request body -> 400
+    """
+    try:
+        data = request.get_json(force=False, silent=False)
+    except BadRequest:
+        abort(400, description="Invalid JSON in request body")
+
+    if data is None:
+        abort(400, description="Invalid JSON in request body")
+    return data
+
+def require_field(data, field_name):
+    if field_name not in data:
+        abort(400, description=f"Missing required field: {field_name}")
+
+def validate_user_id(user_id):
+    if not isinstance(user_id, int):
+        abort(400, description="Invalid user_id")
+    if find_user(user_id) is None:
+        abort(400, description="Invalid user_id (user doesn't exist)")
+
+# ✅ NEW: Error handlers (return JSON instead of HTML)
+@app.errorhandler(400)
+def bad_request(e):
+    msg = getattr(e, "description", "Bad Request")
+    return jsonify({"error": msg}), 400
+
+@app.errorhandler(404)
+def not_found(e):
+    msg = getattr(e, "description", "Not Found")
+    return jsonify({"error": msg}), 404
 
 # Define route to handle requests to the root URL ('/')
 @app.route('/')
@@ -48,7 +98,8 @@ def get_user(user_id):
     # Using a list comprehension to find the user by ID
     user = next((user for user in users if user['id'] == user_id), None)
     if user is None:
-        abort(404)  # If the user is not found, return a 404 error (Not Found)
+        abort(404, description="User not found")
+        # abort(404)  # If the user is not found, return a 404 error (Not Found)
     return jsonify(user), 200  # Return the user as a JSON object with a 200 status code (OK)
 
 # Route to create a new user (POST request)
@@ -56,15 +107,20 @@ def get_user(user_id):
 @app.route('/users', methods=['POST'])
 def create_user():
     # If the request body is not in JSON format or if the 'name' field is missing, return a 400 error (Bad Request)
-    if not request.json or not 'name' in request.json:
-        abort(400)
-    
+    # if not request.json or not 'name' in request.json:
+    #     abort(400)
+    data = get_json_or_abort_400()
+    if 'name' not in data:
+      abort(400, description="Missing required field: name")
+
     # Create a new user dictionary. Assign the next available ID by incrementing the highest current ID.
     # If no users exist, the new ID will be 1.
     new_user = {
         'id': users[-1]['id'] + 1 if users else 1,
-        'name': request.json['name'],  # The name is provided in the POST request body
-        'age': request.json.get('age', 0)  # The age is optional; default is 0 if not provided
+        'name': data['name'],
+        'age': data.get('age', 0)
+         # 'name': request.json['name'],  # The name is provided in the POST request body
+         # 'age': request.json.get('age', 0)  # The age is optional; default is 0 if not provided
     }
     # Add the new user to the users list
     users.append(new_user)
@@ -77,16 +133,20 @@ def update_user(user_id):
     # Find the user by their ID
     user = next((user for user in users if user['id'] == user_id), None)
     if user is None:
-        abort(404)  # If the user is not found, return a 404 error (Not Found)
+        abort(404, description="User not found")  # If the user is not found, return a 404 error (Not Found)
     
     # If the request body is missing or not in JSON format, return a 400 error (Bad Request)
-    if not request.json:
-        abort(400)
+    # if not request.json:
+    #    abort(400)
+    data = get_json_or_abort_400()
+    user['name'] = data.get('name', user['name'])
+    user['age'] = data.get('age', user['age'])
+
     
     # Update the user's data based on the request body
     # If a field is not provided in the request, keep the existing value
-    user['name'] = request.json.get('name', user['name'])
-    user['age'] = request.json.get('age', user['age'])
+    # user['name'] = request.json.get('name', user['name'])
+    # user['age'] = request.json.get('age', user['age'])
     return jsonify(user), 200  # Return the updated user data with a 200 status code (OK)
 
 # Route to delete a user (DELETE request)
@@ -97,6 +157,93 @@ def delete_user(user_id):
     # Rebuild the users list, excluding the user with the specified ID
     users = [user for user in users if user['id'] != user_id]
     return '', 204  # 204 is the HTTP status code for 'No Content', indicating the deletion was successful
+
+
+# =========================================================
+# ✅ NEW: Part 1 - Tasks Resource
+# =========================================================
+
+@app.route('/tasks', methods=['GET'])
+def get_tasks():
+    return jsonify(tasks), 200
+
+@app.route('/tasks/<int:task_id>', methods=['GET'])
+def get_task(task_id):
+    task = find_task(task_id)
+    if task is None:
+        abort(404, description="Task not found")
+    return jsonify(task), 200
+
+@app.route('/tasks', methods=['POST'])
+def create_task():
+    data = get_json_or_abort_400()
+
+    require_field(data, "title")
+    require_field(data, "user_id")
+
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        abort(400, description="Missing required field: title")
+
+    user_id = data.get("user_id")
+    validate_user_id(user_id)
+
+    new_task = {
+        "id": next_task_id(),
+        "title": title.strip(),
+        "description": data.get("description", ""),
+        "user_id": user_id,
+        "completed": data.get("completed", False)
+    }
+    tasks.append(new_task)
+    return jsonify(new_task), 201
+
+@app.route('/tasks/<int:task_id>', methods=['PUT'])
+def update_task(task_id):
+    task = find_task(task_id)
+    if task is None:
+        abort(404, description="Task not found")
+
+    data = get_json_or_abort_400()
+
+    require_field(data, "title")
+    require_field(data, "user_id")
+
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        abort(400, description="Missing required field: title")
+
+    user_id = data.get("user_id")
+    validate_user_id(user_id)
+
+    task["title"] = title.strip()
+    task["description"] = data.get("description", "")
+    task["user_id"] = user_id
+    task["completed"] = data.get("completed", False)
+
+    return jsonify(task), 200
+
+@app.route('/tasks/<int:task_id>', methods=['DELETE'])
+def delete_task(task_id):
+    task = find_task(task_id)
+    if task is None:
+        abort(404, description="Task not found")
+
+    tasks.remove(task)
+    return '', 204
+
+# =========================================================
+# ✅ NEW: Part 2 - User Tasks Endpoint
+# =========================================================
+
+@app.route('/users/<int:user_id>/tasks', methods=['GET'])
+def get_user_tasks(user_id):
+    user = find_user(user_id)
+    if user is None:
+        abort(404, description="User not found")
+
+    user_tasks = [t for t in tasks if t["user_id"] == user_id]
+    return jsonify(user_tasks), 200
 
 # Entry point for running the Flask app
 # The app will run on host 0.0.0.0 (accessible on all network interfaces) and port 8000.
